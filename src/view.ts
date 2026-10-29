@@ -9,6 +9,9 @@ import {
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { PHONE, CAMERA, MAX_FRAGMENTS } from './config';
 import { renderQuality, type RenderQuality } from './quality';
+import { deviceClock } from './clock';
+import { ScreenTexture } from './screenTexture';
+import { FoldScreenMaterial, followScreen, screenTarget } from './screenEffect';
 import type { BodyPose, DamageState, Grip, HalfId, PhysicsSample } from './types';
 
 const { width: W, height: H, thickness: T } = PHONE;
@@ -46,61 +49,6 @@ function canvasTexture(w: number, h: number, draw: (ctx: CanvasRenderingContext2
   return texture;
 }
 
-function wallpaperTexture(outer = false): CanvasTexture {
-  const height = 1152, width = outer ? 816 : Math.round(height * W * 2 / H);
-  return canvasTexture(width, height, ctx => {
-    // Original procedural landscape: blue haze, distant ridges and finely contoured dunes.
-    const bg = ctx.createLinearGradient(0, 0, 0, height);
-    bg.addColorStop(0, '#7ea6c1'); bg.addColorStop(.44, '#d2ccb7'); bg.addColorStop(.58, '#dcc8a3'); bg.addColorStop(1, '#b3a48e');
-    ctx.fillStyle = bg; ctx.fillRect(0, 0, width, height);
-    const random = seeded(5829);
-    for (let ridge = 0; ridge < 5; ridge++) {
-      const baseline = height * (.45 + ridge * .032);
-      ctx.beginPath(); ctx.moveTo(-20, baseline + 100);
-      for (let x = -20; x <= width + 24; x += 22) {
-        const y = baseline + Math.sin(x / width * 10 + ridge * .8) * 17 + Math.sin(x / width * 65 + ridge) * (4 + ridge * 2) + (random() - .5) * 9;
-        ctx.lineTo(x, y);
-      }
-      ctx.lineTo(width + 20, height); ctx.lineTo(-20, height); ctx.closePath();
-      ctx.fillStyle = ['#a69f87', '#92917e', '#7f806f', '#a69e87', '#8e8a77'][ridge]; ctx.fill();
-    }
-    const sand = ctx.createLinearGradient(0, height * .55, width * .7, height);
-    sand.addColorStop(0, '#e5d8b8'); sand.addColorStop(.46, '#d1bea0'); sand.addColorStop(1, '#ad9b80');
-    ctx.fillStyle = sand; ctx.beginPath(); ctx.moveTo(0, height * .64);
-    ctx.bezierCurveTo(width * .27, height * .78, width * .47, height * .67, width, height * .55);
-    ctx.lineTo(width, height); ctx.lineTo(0, height); ctx.closePath(); ctx.fill();
-    ctx.save(); ctx.beginPath(); ctx.moveTo(0, height * .64);
-    ctx.bezierCurveTo(width * .27, height * .78, width * .47, height * .67, width, height * .55);
-    ctx.lineTo(width, height); ctx.lineTo(0, height); ctx.clip();
-    for (let line = 0; line < 460; line++) {
-      const y = height * .55 + line * 1.35;
-      ctx.strokeStyle = line % 3 === 0 ? '#fff6de42' : '#6b5c4529'; ctx.lineWidth = .7;
-      ctx.beginPath(); ctx.moveTo(-10, y + height * .07);
-      ctx.bezierCurveTo(width * .28, y + height * .2, width * .56, y + height * .04, width + 10, y - height * .075);
-      ctx.stroke();
-    }
-    ctx.restore();
-    ctx.textAlign = 'center'; ctx.fillStyle = '#fff8df';
-    ctx.font = `400 ${outer ? 27 : 29}px -apple-system, BlinkMacSystemFont, Arial, sans-serif`;
-    ctx.fillText('10月28日 星期三', width * .5, height * .091);
-    ctx.save(); ctx.translate(width * .5, height * (outer ? .315 : .39)); ctx.scale(outer ? .71 : .74, 1);
-    ctx.font = `200 ${height * (outer ? .26 : .36)}px "Arial Narrow", "Helvetica Neue", Arial, sans-serif`;
-    ctx.fillStyle = '#fff7dc'; ctx.fillText('19:41', 0, 0); ctx.restore();
-    const r = height * .018;
-    ctx.strokeStyle = '#ffffffd9'; ctx.lineWidth = 2.3;
-    for (let i = 0; i < 3; i++) {
-      ctx.beginPath(); ctx.arc(width - r * 2.1, height * .058, r * (1 - i * .27), Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
-    }
-    for (let i = 0; i < 2; i++) {
-      const cx = width - r * 2.05, cy = height * (.86 + i * .075);
-      ctx.fillStyle = '#fffbea30'; ctx.beginPath(); ctx.arc(cx, cy, r * 1.12, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = '#fffbeecb'; ctx.lineWidth = 2;
-      if (i) { ctx.strokeRect(cx - r * .43, cy - r * .31, r * .86, r * .6); ctx.beginPath(); ctx.arc(cx, cy, r * .15, 0, Math.PI * 2); ctx.stroke(); }
-      else { ctx.beginPath(); ctx.moveTo(cx - r * .22, cy - r * .37); ctx.lineTo(cx + r * .2, cy - r * .37); ctx.lineTo(cx + r * .12, cy + r * .35); ctx.lineTo(cx - r * .12, cy + r * .35); ctx.closePath(); ctx.stroke(); }
-    }
-    ctx.fillStyle = '#fffcebbd'; ctx.beginPath(); ctx.roundRect(width * .28, height - 21, width * .44, 5, 2.5); ctx.fill();
-  });
-}
 
 function seeded(seed: number): () => number {
   let v = seed;
@@ -160,12 +108,13 @@ function crackTexture(half: HalfId): CanvasTexture {
 }
 
 interface ScreenParts {
-  material: MeshBasicMaterial;
+  material: FoldScreenMaterial;
   cracks: MeshBasicMaterial;
   glitch: MeshBasicMaterial;
   tear: Group;
   outer: boolean;
   power: number;
+  frost: number;
 }
 
 export class DuoView {
@@ -183,9 +132,13 @@ export class DuoView {
   private readonly hinge = new Group();
   private readonly shadow: Mesh<PlaneGeometry, MeshBasicMaterial>;
   private readonly environment: Texture;
-  private readonly wallpaper: CanvasTexture;
+  private readonly wallpaper: ScreenTexture;
+  private readonly coverWallpaper: ScreenTexture;
   private health = 100;
   private broken = false;
+  private fold = 180;
+  private displayInitialized = false;
+  private lastRenderTime: number | null = null;
   private readonly worldPoint = new Vector3();
   private readonly target = new Vector3(0, .25, 0);
 
@@ -246,7 +199,9 @@ export class DuoView {
     this.shadow.rotation.x = -Math.PI / 2; this.shadow.position.y = .0005;
     this.scene.add(this.shadow);
 
-    this.wallpaper = wallpaperTexture();
+    const clock = deviceClock();
+    this.wallpaper = new ScreenTexture(false, clock);
+    this.coverWallpaper = new ScreenTexture(true, clock);
     this.buildHalf(0); this.buildHalf(1);
     this.buildHinge();
     this.scene.add(...this.halves);
@@ -309,7 +264,7 @@ export class DuoView {
     if (half === 1) {
       const bezel = this.solid(half, surface(W - .006, H - .006), new MeshStandardMaterial({ color: '#101418', roughness: .19, metalness: .5 }), 0, 0, -FRONT - .0008);
       bezel.rotation.y = Math.PI; bezel.name = 'outer-bezel';
-      this.addScreen(half, surface(W - .029, H - .029), wallpaperTexture(true), 0, -FRONT - .0021, true, tear);
+      this.addScreen(half, surface(W - .029, H - .029), this.coverWallpaper, 0, -FRONT - .0021, true, tear);
       const pill = this.solid(half, new ShapeGeometry(panelShape(.028, .078, .014)), new MeshBasicMaterial({ color: '#010407' }), -W * .365, H * .386, -FRONT - .0037);
       pill.rotation.y = Math.PI; pill.name = 'outer-front-camera';
       const lens = this.solid(half, new CircleGeometry(.0053, 18), new MeshBasicMaterial({ color: '#172434' }), -W * .365, H * .397, -FRONT - .0039);
@@ -336,8 +291,8 @@ export class DuoView {
     if (!half) { this.buildCameras(half); this.buildMark(half); }
   }
 
-  private addScreen(half: HalfId, geometry: ShapeGeometry, map: CanvasTexture, x: number, z: number, outer: boolean, tear: Group): void {
-    const material = new MeshBasicMaterial({ map, toneMapped: false, fog: false });
+  private addScreen(half: HalfId, geometry: ShapeGeometry, map: ScreenTexture, x: number, z: number, outer: boolean, tear: Group): void {
+    const material = new FoldScreenMaterial(map.sharp, map.blurred, outer);
     const mesh = this.solid(half, geometry, material, x, 0, z, !outer);
     mesh.name = outer ? 'outer-screen' : `inner-screen-${half}`;
     if (outer) mesh.rotation.y = Math.PI;
@@ -359,7 +314,7 @@ export class DuoView {
     glitch.position.set(x, 0, z + (outer ? -.001 : .001)); glitch.renderOrder = 3;
     if (outer) glitch.rotation.y = Math.PI;
     this.halves[half].add(glitch);
-    this.screens.push({ material, cracks: crackMat, glitch: glitchMat, tear, outer, power: 1 });
+    this.screens.push({ material, cracks: crackMat, glitch: glitchMat, tear, outer, power: 1, frost: 0 });
   }
 
   private buildMark(half: HalfId): void {
@@ -445,17 +400,15 @@ export class DuoView {
       this.halves[i].quaternion.copy(poses[i].quaternion);
       this.halves[i].updateMatrixWorld(true);
     }
-    this.health = damage.screen; this.broken = damage.broken;
+    this.health = damage.screen; this.broken = damage.broken; this.fold = sample.angle;
     const damageAmount = Math.max(0, (90 - damage.screen) / 90);
     for (const screen of this.screens) {
-      screen.power = screen.outer ? .35 + .65 * (1 - Math.min(1, Math.max(0, sample.angle) / 65)) : Math.min(1, Math.max(0, (sample.angle - 12) / 45));
-      if (damage.broken) screen.power = screen.outer ? .65 : .8;
-      const luminance = damage.screen <= 0 ? 0 : Math.max(.015, screen.power);
-      screen.material.color.setScalar(luminance);
       screen.cracks.opacity = damageAmount * .92;
       screen.glitch.opacity = damage.screen < 40 && damage.screen > 0 ? (40 - damage.screen) / 40 * .9 : 0;
       screen.tear.visible = damage.broken;
     }
+    if (!this.displayInitialized) this.updateDisplay(0, this.lastRenderTime ?? 0);
+    if (damage.screen <= 0) for (const screen of this.screens) screen.material.color.setScalar(0);
     const coverVisibility = Math.min(1, Math.max(0, (165 - sample.angle) / 35));
     this.hinge.visible = !damage.broken && coverVisibility > 0;
     const shell = this.hinge.children[0] as Mesh<CylinderGeometry, MeshStandardMaterial>;
@@ -474,6 +427,10 @@ export class DuoView {
   }
 
   render(time: number, grips: Iterable<Grip>): void {
+    this.refreshClock();
+    const dt = this.lastRenderTime === null ? 0 : Math.max(0, time - this.lastRenderTime);
+    this.lastRenderTime = time;
+    this.updateDisplay(dt, time);
     let i = 0;
     for (const grip of grips) {
       if (i >= 2) break;
@@ -487,14 +444,36 @@ export class DuoView {
       i++;
     }
     for (; i < 2; i++) { this.gripRings[i].visible = false; this.gripLines[i].visible = false; }
-    if (this.health > 0 && this.health < 25) {
-      const flicker = Math.sin(time * 71) > .88 ? .15 : .8;
-      for (const screen of this.screens) screen.material.color.setScalar(flicker * screen.power);
-    }
     this.renderer.render(this.scene, this.camera);
   }
 
+  resetDisplay(): void {
+    this.displayInitialized = false;
+    this.lastRenderTime = null;
+  }
+
+  private refreshClock(): void {
+    const clock = deviceClock();
+    this.wallpaper.refresh(clock);
+    this.coverWallpaper.refresh(clock);
+  }
+
+  private updateDisplay(dt: number, time: number): void {
+    const flicker = this.health > 0 && this.health < 25 ? (Math.sin(time * 71) > .88 ? .15 : .8) : 1;
+    for (const screen of this.screens) {
+      const target = screenTarget(this.fold, screen.outer, this.broken);
+      const state = this.displayInitialized ? followScreen(screen, target, dt) : target;
+      screen.power = state.power;
+      screen.frost = state.frost;
+      screen.material.setFrost(screen.frost);
+      // Compose damage and the handoff once, so a glass transition cannot revive a failed display.
+      screen.material.color.setScalar(this.health <= 0 ? 0 : screen.power * flicker);
+    }
+    this.displayInitialized = true;
+  }
+
   capture(): string {
+    this.refreshClock();
     const feedback = [...this.gripRings, ...this.gripLines];
     const visibility = feedback.map(object => object.visible);
     feedback.forEach(object => object.visible = false);
@@ -542,6 +521,9 @@ export class DuoView {
     const geometries = new Set<BufferGeometry>();
     const materials = new Set<Material>();
     const textures = new Set<Texture>();
+    for (const screen of [this.wallpaper, this.coverWallpaper]) {
+      textures.add(screen.sharp); textures.add(screen.blurred);
+    }
     this.scene.traverse(object => {
       if (object instanceof Mesh || object instanceof Line) {
         geometries.add(object.geometry);

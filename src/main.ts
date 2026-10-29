@@ -37,6 +37,7 @@ function reset(mode: Mode) {
   physics.reset();
   physics.setViewBounds(view.camera);
   rules.reset(mode);
+  view.resetDisplay();
   sample = { angle: 170, angularSpeed: 0, strain: 0, impact: 0, hardStop: 0, speed: 0 };
   displayedResult = null;
   resultImage = '';
