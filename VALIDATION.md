@@ -10,6 +10,7 @@
 - Chrome实际GPU编译和渲染通过：0°/25°/60°/100°/155°/180°截帧、133ms过渡、反向连续性、黑屏/断轴优先与截图状态一致；手机390×844显示检查无console/page错误。姿态夹具仅验证显示，不冒充玩家动作。
 - 在实际Tokyo与Los_Angeles浏览器时区，同一UTC时刻分别显示23:59与7:59；跨分钟/午夜、系统回拨、同步截图前时钟刷新通过。20次同分钟render纹理版本保持2，跨分钟/回拨/截图前分别只升至3/4/5；9个GPU程序正常运行。
 - 手机低资源模拟与Canvas滤镜缺失夹具通过：360×800/DPR3/2GB/4线程，实际画布450×1000；降采样柔化路径启动正常，9个GPU程序可运行，无console/page错误，收手与1000×1280结果图导出通过。
+- 已更新原GitHub Pages地址：源码提交`98305905154ea0d56c0b035a44e63d80fe0daadb`，网页提交`f84c87fb045a7bf5b2e6dee48ea7df24f997be5a`，Pages状态built。10个线上文件共2,846,815字节均200且SHA-256匹配；线上手机模拟抓取、菜单/模式/音效、结算/PNG、重开与横屏流程通过，零脚本/着色器错误、无外部资源请求。v0.1.4 ZIP共999,813字节，11个唯一文件读回匹配。
 - 证据：`output/playwright/screen-clock-validation.md`、`screen-clock-qa.js`、`screen-transition-qa.js`、`screen-angle-*`、`screen-inner-frost-*`和`screen-mobile-*`。现有官图是静态外观参考，渐变时序由本项目重建；实体手机/Safari性能和官方动画逐帧相似度未作验收。
 
 ## v0.1.3 抓放漂移与界面精简（2026-10-28，America/Los_Angeles）
