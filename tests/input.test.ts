@@ -61,7 +61,7 @@ function emit(target: EventTarget, type: string, values: Record<string, unknown>
 
 function withInput(run: (harness: {
   input: DuoInput; canvas: FakeCanvas; window: EventTarget;
-  physics: SimPhysics; camera: PerspectiveCamera; halves: [Group, Group]; at: (half: HalfId) => { clientX: number; clientY: number };
+  physics: SimPhysics; camera: PerspectiveCamera; halves: [Group, Group]; pickables: Mesh[]; at: (half: HalfId) => { clientX: number; clientY: number };
 }) => void, cameraSetup?: (camera: PerspectiveCamera) => void): void {
   const oldWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
@@ -105,7 +105,7 @@ function withInput(run: (harness: {
     return { clientX: (projected.x + 1) * 400, clientY: (1 - projected.y) * 400 };
   };
   try {
-    run({ input, canvas, window: fakeWindow, physics, camera, halves, at });
+    run({ input, canvas, window: fakeWindow, physics, camera, halves, pickables, at });
   } finally {
     input.dispose();
     for (const mesh of pickables) mesh.geometry.dispose();
@@ -257,5 +257,28 @@ test('pointer cancellation releases its grip and window blur clears remaining in
     emit(window, 'blur');
     assert.equal(physics.grips.size, 0);
     assert.equal(canvas.captures.size, 0);
+  });
+});
+
+test('retired phones occlude acquisition instead of letting a pointer reach through them', () => {
+  withInput(({ canvas, physics, halves, pickables, at }) => {
+    const cover = new Mesh(new PlaneGeometry(PHONE.width, PHONE.height), new MeshBasicMaterial());
+    cover.position.copy(halves[0].position); cover.position.z = .2;
+    cover.userData = { half: 0, retired: true }; cover.updateMatrixWorld(true); pickables.unshift(cover);
+    emit(canvas, 'pointerdown', { pointerId: 11, ...at(0) });
+    assert.equal(physics.grips.size, 0);
+    cover.visible = false;
+    emit(canvas, 'pointerdown', { pointerId: 11, ...at(0) });
+    assert.equal(physics.grips.size, 1);
+  });
+});
+
+test('a physically shattered half releases its grip and cannot become an invisible grab point', () => {
+  withInput(({ canvas, physics, input, at }) => {
+    emit(canvas, 'pointerdown', { pointerId: 11, ...at(0) });
+    physics.activeVisible = [false, true]; input.reconcile();
+    assert.equal(physics.grips.size, 0); assert.equal(canvas.captures.size, 0);
+    emit(canvas, 'pointerdown', { pointerId: 12, ...at(0) });
+    assert.equal(physics.grips.size, 0);
   });
 });

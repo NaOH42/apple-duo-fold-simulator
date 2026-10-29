@@ -5,11 +5,17 @@ import type { DuoInput } from './input';
 import { GameRules } from './rules';
 import { GameUI } from './ui';
 import { DuoAudio } from './audio';
+import { DuoFeedback } from './feedback';
+import { DuoHaptics } from './haptics';
 import { FIXED_DT } from './config';
-import type { Mode, PhysicsSample, RoundResult } from './types';
+import type { FeedbackEvent, Mode, PhysicsSample, RoundResult } from './types';
 
 const rules = new GameRules();
 const audio = new DuoAudio();
+const feedback = new DuoFeedback();
+const haptics = new DuoHaptics();
+const pendingFeedback: FeedbackEvent[] = [];
+let feedbackActive = false;
 let physics: DuoPhysics;
 let view: DuoView;
 let input: DuoInput;
@@ -24,17 +30,24 @@ let sample: PhysicsSample = { angle: 180, angularSpeed: 0, strain: 0, impact: 0,
 const ui = new GameUI(document.querySelector<HTMLElement>('#app')!, {
   onMode: mode => reset(mode),
   onReset: () => reset(rules.state.mode),
-  onFinish: () => { input?.releaseAll(); rules.finish(); },
-  onSound: () => { audio.unlock(); rules.toggleSound(); audio.setEnabled(rules.state.sound); },
-  onHelp: () => { input?.releaseAll(); audio.unlock(); },
+  onFinish: () => { input?.releaseAll(); stopFeedback(); rules.finish(); },
+  onSound: () => { unlockFeedback(); rules.toggleSound(); audio.setEnabled(rules.state.sound); },
+  onHelp: () => { input?.releaseAll(); unlockFeedback(); },
+  onHaptics: () => { haptics.toggle(); haptics.unlock(); ui.setHaptics(haptics.enabled, haptics.supported); },
+  onClearDesk: () => clearDesk(),
   onExport: () => exportResult(),
 });
 
 function reset(mode: Mode) {
   if (!ready) return;
-  roundToken++;
   input.releaseAll();
-  physics.reset();
+  stopFeedback();
+  if (!physics.replace()) {
+    ui.toast('桌面放满了，先清一下再换新');
+    ui.setDesk(true, true);
+    return;
+  }
+  roundToken++;
   physics.setViewBounds(view.camera);
   rules.reset(mode);
   view.resetDisplay();
@@ -42,15 +55,51 @@ function reset(mode: Mode) {
   displayedResult = null;
   resultImage = '';
   accumulator = 0;
-  view.sync(physics.poses, rules.state, sample, physics.fragments);
+  syncView();
   ui.update(rules.state, sample, 0);
 }
 
 function simulate() {
+  const wasRunning = rules.state.running;
   sample = physics.step(FIXED_DT);
   rules.step(sample, FIXED_DT);
   physics.setDamage(rules.state);
-  for (const event of rules.events) audio.play(event, event === 'impact' ? sample.impact / 8 : Math.max(.3, sample.strain));
+  input?.reconcile();
+  if (wasRunning) pendingFeedback.push(...feedback.step(sample, rules.state, rules.events, FIXED_DT));
+}
+
+function syncView() {
+  view.sync(physics.poses, rules.state, sample, physics.fragments, physics.retiredPhones, physics.activeVisible);
+  ui.setDesk(physics.retiredPhones.length > 0 || physics.fragments.length > 0, physics.retiredPhones.length >= 6);
+}
+
+function stopFeedback() {
+  feedbackActive = false;
+  audio.stop(); haptics.stop(); feedback.reset(); pendingFeedback.length = 0;
+  view?.clearFeedback();
+}
+
+function unlockFeedback() {
+  audio.unlock(); haptics.unlock(); feedbackActive = true; pendingFeedback.length = 0;
+}
+
+function clearDesk() {
+  if (!ready) return;
+  input.releaseAll(); stopFeedback(); physics.clearDesk(); syncView();
+}
+
+function playFeedback() {
+  if (!feedbackActive) { pendingFeedback.length = 0; return; }
+  const centre = physics.poses[0].position.clone().add(physics.poses[1].position).multiplyScalar(.5);
+  feedback.frame.pan = Math.max(-.85, Math.min(.85, centre.clone().project(view.camera).x));
+  for (const event of pendingFeedback) {
+    if (!event.point) event.point = centre.clone();
+    event.pan = Math.max(-.85, Math.min(.85, event.point.clone().project(view.camera).x));
+    audio.play(event); view.feedback(event);
+  }
+  haptics.play(pendingFeedback);
+  pendingFeedback.length = 0;
+  audio.tick(rules.state.running ? feedback.frame : { ...feedback.frame, angularSpeed: 0, signedSpeed: 0, scrapeSpeed: 0, broken: true });
 }
 
 function update(now: number) {
@@ -63,9 +112,9 @@ function update(now: number) {
     simulate();
     accumulator -= FIXED_DT;
   }
-  view.sync(physics.poses, rules.state, sample, physics.fragments);
+  syncView();
+  playFeedback();
   view.render(now / 1000, physics.grips.values());
-  audio.tick(sample.angularSpeed, sample.strain);
   ui.update(rules.state, sample, physics.grips.size);
   if (rules.state.result && rules.state.result !== displayedResult) {
     displayedResult = rules.state.result;
@@ -104,10 +153,11 @@ window.addEventListener('resize', scheduleResize);
 window.visualViewport?.addEventListener('resize', scheduleResize);
 new ResizeObserver(scheduleResize).observe(ui.canvas);
 ui.canvas.addEventListener('contextmenu', event => event.preventDefault());
-ui.canvas.addEventListener('pointerdown', () => { audio.unlock(); audio.setEnabled(rules.state.sound); }, { passive: true });
-document.addEventListener('visibilitychange', () => { input?.releaseAll(); accumulator = 0; lastFrame = performance.now(); });
-window.addEventListener('blur', () => input?.releaseAll());
-window.addEventListener('pagehide', () => { input?.releaseAll(); });
+ui.canvas.addEventListener('pointerdown', () => { unlockFeedback(); audio.setEnabled(rules.state.sound); }, { passive: true });
+ui.canvas.addEventListener('pointercancel', () => haptics.stop());
+document.addEventListener('visibilitychange', () => { input?.releaseAll(); stopFeedback(); accumulator = 0; lastFrame = performance.now(); });
+window.addEventListener('blur', () => { input?.releaseAll(); stopFeedback(); });
+window.addEventListener('pagehide', () => { input?.releaseAll(); stopFeedback(); });
 
 async function start() {
   try {
@@ -119,17 +169,18 @@ async function start() {
     resize();
     physics = await DuoPhysics.create();
     physics.setViewBounds(view.camera);
-    view.sync(physics.poses, rules.state, sample, physics.fragments);
+    syncView();
     input = new DuoInput(ui.canvas, view.camera, view.halves, view.pickables, physics,
       () => { audio.unlock(); audio.setEnabled(rules.state.sound); }, message => ui.toast(message));
     ready = true;
     audio.setEnabled(rules.state.sound);
     ui.setReady();
+    ui.setHaptics(haptics.enabled, haptics.supported);
     // Development-only diagnostics. Never part of the production player interface.
     if (import.meta.env.DEV && new URLSearchParams(location.search).has('qa')) {
-      Object.assign(window, { __duo: { physics, rules, view, input,
+      Object.assign(window, { __duo: { physics, rules, view, input, audio, haptics, feedback,
         get sample() { return sample; },
-        advance: (count = 1) => { for (let i = 0; i < count; i++) simulate(); view.sync(physics.poses, rules.state, sample, physics.fragments); },
+        advance: (count = 1) => { for (let i = 0; i < count; i++) simulate(); syncView(); },
       } });
     }
     requestAnimationFrame(update);

@@ -1,5 +1,5 @@
 import {
-  ACESFilmicToneMapping, AmbientLight, BufferGeometry, CanvasTexture, CircleGeometry,
+  ACESFilmicToneMapping, AmbientLight, BoxGeometry, BufferGeometry, CanvasTexture, CircleGeometry,
   Color, CylinderGeometry, DirectionalLight, DoubleSide, ExtrudeGeometry,
   Fog, Group, HemisphereLight, Line, LineBasicMaterial, Mesh, MeshBasicMaterial,
   MeshPhysicalMaterial, MeshStandardMaterial, PerspectiveCamera, PlaneGeometry,
@@ -12,7 +12,8 @@ import { renderQuality, type RenderQuality } from './quality';
 import { deviceClock } from './clock';
 import { ScreenTexture } from './screenTexture';
 import { FoldScreenMaterial, followScreen, screenTarget } from './screenEffect';
-import type { BodyPose, DamageState, Grip, HalfId, PhysicsSample } from './types';
+import type { Object3D } from 'three';
+import type { BodyPose, ContactMaterial, DamageState, FeedbackEvent, FragmentPose, Grip, HalfId, PhysicsSample, RetiredPhone } from './types';
 
 const { width: W, height: H, thickness: T } = PHONE;
 const FRONT = T / 2;
@@ -117,6 +118,24 @@ interface ScreenParts {
   frost: number;
 }
 
+interface ArchivedView {
+  root: Group;
+  halves: [Group, Group];
+  hinge: Group;
+  screens: ScreenParts[];
+  materials: Set<Material>;
+  pickables: Mesh[];
+  source: RetiredPhone;
+  angle: number;
+}
+
+interface ContactEffect {
+  mesh: Mesh<PlaneGeometry, MeshBasicMaterial>;
+  remaining: number;
+  duration: number;
+  size: number;
+}
+
 export class DuoView {
   public readonly camera = new PerspectiveCamera(33, 1, .05, 80);
   public readonly halves: [Group, Group] = [new Group(), new Group()];
@@ -126,9 +145,14 @@ export class DuoView {
   private readonly keyLight: DirectionalLight;
   private currentQuality: RenderQuality;
   private readonly screens: ScreenParts[] = [];
+  private readonly activePickables: Mesh[] = [];
+  private readonly archives = new Map<number, ArchivedView>();
+  private readonly contactEffects: ContactEffect[] = [];
+  private readonly effectContacts = new Map<number, number>();
+  private readonly fragmentMaterials: Record<ContactMaterial, MeshPhysicalMaterial>;
   private readonly fragmentMeshes: Mesh[] = [];
-  private readonly gripRings: Mesh[] = [];
-  private readonly gripLines: Line[] = [];
+  private readonly gripRings: Mesh<RingGeometry, MeshBasicMaterial>[] = [];
+  private readonly gripLines: Line<BufferGeometry, LineBasicMaterial>[] = [];
   private readonly hinge = new Group();
   private readonly shadow: Mesh<PlaneGeometry, MeshBasicMaterial>;
   private readonly environment: Texture;
@@ -137,6 +161,7 @@ export class DuoView {
   private health = 100;
   private broken = false;
   private fold = 180;
+  private load = 0;
   private displayInitialized = false;
   private lastRenderTime: number | null = null;
   private readonly worldPoint = new Vector3();
@@ -205,16 +230,30 @@ export class DuoView {
     this.buildHalf(0); this.buildHalf(1);
     this.buildHinge();
     this.scene.add(...this.halves);
+    this.activePickables.push(...this.pickables);
 
+    this.fragmentMaterials = {
+      glass: new MeshPhysicalMaterial({ color: '#23343e', metalness: .15, roughness: .28, clearcoat: 1 }),
+      metal: new MeshPhysicalMaterial({ color: '#bfc5c7', metalness: .94, roughness: .24, clearcoat: .3 }),
+      back: new MeshPhysicalMaterial({ color: '#e8e7df', metalness: .035, roughness: .62, clearcoat: .2 }),
+    };
+    const shardGeometry = new BoxGeometry(1, 1, 1);
     for (let i = 0; i < MAX_FRAGMENTS; i++) {
-      const shape = new Shape().moveTo(-.027, -.018).lineTo(.033, -.025).lineTo(.011, .043).closePath();
-      const g = new ExtrudeGeometry(shape, { depth: .005, bevelEnabled: false });
-      const fragment = new Mesh(g, new MeshPhysicalMaterial({
-        color: i % 3 ? '#b9d5db' : '#1e3141', metalness: .45, roughness: .2,
-        clearcoat: 1, side: DoubleSide,
-      }));
+      const fragment = new Mesh(shardGeometry, this.fragmentMaterials.glass);
+      fragment.scale.set(.05, .07, .012);
       fragment.visible = false; fragment.castShadow = true;
       this.fragmentMeshes.push(fragment); this.scene.add(fragment);
+    }
+    const contactMap = canvasTexture(64, 64, ctx => {
+      const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 31);
+      gradient.addColorStop(0, '#59615f70'); gradient.addColorStop(.38, '#59615f2a'); gradient.addColorStop(1, '#59615f00');
+      ctx.fillStyle = gradient; ctx.fillRect(0, 0, 64, 64);
+    });
+    const contactGeometry = new PlaneGeometry(1, 1);
+    for (let i = 0; i < 6; i++) {
+      const mesh = new Mesh(contactGeometry, new MeshBasicMaterial({ map: contactMap, transparent: true, opacity: 0, depthWrite: false, toneMapped: false }));
+      mesh.name = `contact-feedback-${i}`; mesh.rotation.x = -Math.PI / 2; mesh.visible = false;
+      this.contactEffects.push({ mesh, remaining: 0, duration: .18, size: .1 }); this.scene.add(mesh);
     }
     for (let i = 0; i < 2; i++) {
       const ring = new Mesh(new RingGeometry(.042, .051, 40), new MeshBasicMaterial({ color: '#4caca4', transparent: true, opacity: .8, side: DoubleSide, depthTest: false, depthWrite: false }));
@@ -394,35 +433,141 @@ export class DuoView {
     });
   }
 
-  sync(poses: [BodyPose, BodyPose], damage: DamageState, sample: PhysicsSample, fragments: BodyPose[]): void {
-    for (let i = 0; i < 2; i++) {
-      this.halves[i].position.copy(poses[i].position);
-      this.halves[i].quaternion.copy(poses[i].quaternion);
-      this.halves[i].updateMatrixWorld(true);
+  private archivePhone(source: RetiredPhone): ArchivedView {
+    const root = new Group(); root.name = `retired-phone-${source.id}`;
+    const halves = this.halves.map(half => half.clone(true)) as [Group, Group];
+    const nodes = new Map<Object3D, Object3D>();
+    const materials = new Map<Material, Material>();
+    const screenKinds = new Map(this.screens.map(screen => [screen.material, screen.outer]));
+    const pickables: Mesh[] = [];
+    for (const half of [0, 1] as const) {
+      const originals: Object3D[] = [], copies: Object3D[] = [];
+      this.halves[half].traverse(object => originals.push(object));
+      halves[half].traverse(object => copies.push(object));
+      copies.forEach((object, index) => {
+        const original = originals[index]; nodes.set(original, object);
+        object.name = `retired-phone-${source.id}-${original.name || index}`;
+        object.userData.retired = true; object.userData.retiredId = source.id;
+        if (!(object instanceof Mesh) || !(original instanceof Mesh)) return;
+        const overlay = this.screens.some(screen => original.material === screen.cracks || original.material === screen.glitch);
+        object.userData.archiveMajor = overlay || /^(titanium-frame|ceramic-back|inner-bezel|inner-screen|outer-bezel|outer-screen|outer-front-camera|camera-island|rear-lens|hinge-spine-shell|apple-mark)/.test(original.name);
+        // The solid shell already casts the leaf silhouette; tiny ports and coplanar screens add no useful shadow.
+        object.castShadow = original.castShadow && /^(titanium-frame|camera-island|rear-lens-rim|hinge-spine-shell)/.test(original.name);
+        const cloneMaterial = (material: Material): Material => {
+          let copy = materials.get(material);
+          if (!copy) {
+            if (material instanceof FoldScreenMaterial) {
+              copy = new FoldScreenMaterial(material.map!, material.blurredMap, screenKinds.get(material) ?? false);
+              (copy as FoldScreenMaterial).color.copy(material.color);
+            } else copy = material.clone();
+            materials.set(material, copy);
+          }
+          return copy;
+        };
+        object.material = Array.isArray(original.material) ? original.material.map(cloneMaterial) : cloneMaterial(original.material);
+        pickables.push(object);
+      });
     }
-    this.health = damage.screen; this.broken = damage.broken; this.fold = sample.angle;
+    const screens = this.screens.map(screen => ({ ...screen,
+      material: materials.get(screen.material) as FoldScreenMaterial,
+      cracks: materials.get(screen.cracks) as MeshBasicMaterial,
+      glitch: materials.get(screen.glitch) as MeshBasicMaterial,
+      tear: nodes.get(screen.tear) as Group,
+    }));
+    for (const screen of screens) screen.material.setFrost(screen.frost);
+    root.add(...halves); this.scene.add(root);
+    return { root, halves, hinge: nodes.get(this.hinge) as Group, screens,
+      materials: new Set(materials.values()), pickables, source, angle: this.fold };
+  }
+
+  private applyArchiveBudget(archive: ArchivedView): void {
+    for (const mesh of archive.pickables) {
+      const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      mesh.visible = (!(this.currentQuality.mobile || this.currentQuality.tier === 'low') || mesh.userData.archiveMajor === true)
+        && !(material.transparent && material.opacity < .001);
+    }
+  }
+
+  private syncHinge(hinge: Group, angle: number, broken: boolean, visible: [boolean, boolean]): void {
+    const coverVisibility = Math.min(1, Math.max(0, (165 - angle) / 35));
+    hinge.visible = !broken && visible[0] && visible[1] && coverVisibility > 0;
+    const shell = hinge.children[0] as Mesh<CylinderGeometry, MeshStandardMaterial>;
+    shell.material.opacity = coverVisibility;
+    shell.scale.z = (FRONT + (PHONE.closedThickness / 2 - FRONT) * (1 - Math.min(180, Math.max(0, angle)) / 180)) / PHONE.spineOverhang;
+  }
+
+  private applyScreenDamage(screens: ScreenParts[], damage: DamageState): void {
     const damageAmount = Math.max(0, (90 - damage.screen) / 90);
-    for (const screen of this.screens) {
+    for (const screen of screens) {
       screen.cracks.opacity = damageAmount * .92;
       screen.glitch.opacity = damage.screen < 40 && damage.screen > 0 ? (40 - damage.screen) / 40 * .9 : 0;
       screen.tear.visible = damage.broken;
+      if (damage.screen <= 0) screen.material.color.setScalar(0);
     }
+  }
+
+  private syncArchives(retired: RetiredPhone[]): void {
+    const ids = new Set(retired.map(phone => phone.id));
+    for (const [id, archive] of this.archives) {
+      if (ids.has(id)) continue;
+      this.scene.remove(archive.root);
+      archive.materials.forEach(material => material.dispose());
+      this.archives.delete(id);
+    }
+    for (const phone of retired) {
+      let archive = this.archives.get(phone.id);
+      if (!archive) { archive = this.archivePhone(phone); this.archives.set(phone.id, archive); }
+      archive.source = phone;
+      archive.halves.forEach((half, index) => {
+        half.position.copy(phone.poses[index].position); half.quaternion.copy(phone.poses[index].quaternion);
+        half.visible = phone.visible[index]; half.updateMatrixWorld(true);
+      });
+      const n0 = new Vector3(0, 0, 1).applyQuaternion(phone.poses[0].quaternion);
+      const n1 = new Vector3(0, 0, 1).applyQuaternion(phone.poses[1].quaternion);
+      archive.angle = 180 - Math.acos(Math.max(-1, Math.min(1, n0.dot(n1)))) * 180 / Math.PI;
+      this.applyScreenDamage(archive.screens, phone.damage);
+      this.syncHinge(archive.hinge, archive.angle, phone.damage.broken, phone.visible);
+      this.applyArchiveBudget(archive);
+    }
+  }
+
+  sync(poses: [BodyPose, BodyPose], damage: DamageState, sample: PhysicsSample, fragments: FragmentPose[],
+    retired: RetiredPhone[] = [], activeVisible: [boolean, boolean] = [true, true]): void {
+    // Clone new retired phones while the previous active phone still has its own appearance.
+    this.syncArchives(retired);
+    for (let i = 0; i < 2; i++) {
+      this.halves[i].position.copy(poses[i].position);
+      this.halves[i].quaternion.copy(poses[i].quaternion);
+      this.halves[i].visible = activeVisible[i];
+      this.halves[i].updateMatrixWorld(true);
+    }
+    this.health = damage.screen; this.broken = damage.broken; this.fold = sample.angle; this.load = sample.strain;
+    this.applyScreenDamage(this.screens, damage);
     if (!this.displayInitialized) this.updateDisplay(0, this.lastRenderTime ?? 0);
-    if (damage.screen <= 0) for (const screen of this.screens) screen.material.color.setScalar(0);
-    const coverVisibility = Math.min(1, Math.max(0, (165 - sample.angle) / 35));
-    this.hinge.visible = !damage.broken && coverVisibility > 0;
-    const shell = this.hinge.children[0] as Mesh<CylinderGeometry, MeshStandardMaterial>;
-    shell.material.opacity = coverVisibility;
-    shell.scale.z = (FRONT + (PHONE.closedThickness / 2 - FRONT) * (1 - Math.min(180, Math.max(0, sample.angle)) / 180)) / PHONE.spineOverhang;
-    const meanHeight = (poses[0].position.y + poses[1].position.y) / 2;
-    this.shadow.position.x = (poses[0].position.x + poses[1].position.x) / 2;
-    this.shadow.position.z = (poses[0].position.z + poses[1].position.z) / 2;
+    this.syncHinge(this.hinge, sample.angle, damage.broken, activeVisible);
+    const visiblePoses = poses.filter((_, index) => activeVisible[index]);
+    this.shadow.visible = visiblePoses.length > 0;
+    const meanHeight = visiblePoses.reduce((sum, pose) => sum + pose.position.y, 0) / (visiblePoses.length || 1);
+    this.shadow.position.x = visiblePoses.reduce((sum, pose) => sum + pose.position.x, 0) / (visiblePoses.length || 1);
+    this.shadow.position.z = visiblePoses.reduce((sum, pose) => sum + pose.position.z, 0) / (visiblePoses.length || 1);
     this.shadow.material.opacity = .58 / (1 + Math.max(0, meanHeight) * 2);
     this.shadow.scale.setScalar(1 + Math.max(0, meanHeight) * .2);
     for (let i = 0; i < MAX_FRAGMENTS; i++) {
       const mesh = this.fragmentMeshes[i]; mesh.visible = i < fragments.length;
-      if (fragments[i]) { mesh.position.copy(fragments[i].position); mesh.quaternion.copy(fragments[i].quaternion); }
+      if (fragments[i]) {
+        const fragment = fragments[i];
+        mesh.position.copy(fragment.position); mesh.quaternion.copy(fragment.quaternion);
+        mesh.scale.copy(fragment.size ?? new Vector3(.05, .07, .012));
+        mesh.material = this.fragmentMaterials[fragment.material ?? 'glass'];
+        mesh.name = `fragment-${fragment.id ?? i}`;
+        mesh.userData.generation = fragment.generation ?? 0;
+      }
     }
+    this.pickables.length = 0;
+    this.pickables.push(...this.activePickables.filter(mesh => activeVisible[mesh.userData.half as HalfId]));
+    for (const archive of this.archives.values()) archive.root.traverseVisible(object => {
+      if (object instanceof Mesh) this.pickables.push(object);
+    });
     this.scene.updateMatrixWorld(true);
   }
 
@@ -431,12 +576,28 @@ export class DuoView {
     const dt = this.lastRenderTime === null ? 0 : Math.max(0, time - this.lastRenderTime);
     this.lastRenderTime = time;
     this.updateDisplay(dt, time);
+    for (const archive of this.archives.values()) {
+      this.animateScreens(archive.screens, archive.source.damage.screen, archive.source.damage.broken, archive.angle, true, dt, time);
+    }
+    for (const effect of this.contactEffects) {
+      effect.remaining = Math.max(0, effect.remaining - dt);
+      effect.mesh.visible = effect.remaining > 0;
+      const progress = 1 - effect.remaining / effect.duration;
+      effect.mesh.material.opacity = .16 * (1 - progress) * (1 - progress);
+      effect.mesh.scale.setScalar(effect.size * (1 + progress * .22));
+    }
     let i = 0;
     for (const grip of grips) {
       if (i >= 2) break;
       this.worldPoint.copy(grip.localPoint); this.halves[grip.half].localToWorld(this.worldPoint);
       const ring = this.gripRings[i]; ring.visible = true; ring.position.copy(this.worldPoint); ring.quaternion.copy(this.camera.quaternion);
-      ring.scale.setScalar(1 + Math.sin(time * 5) * .04);
+      const stretch = this.worldPoint.distanceTo(grip.target);
+      const stress = Math.max(this.load, stretch * .7);
+      const color = stress > 1 ? '#c76e53' : stress > .65 ? '#ad935a' : '#4c9a8b';
+      ring.material.color.set(color);
+      ring.scale.setScalar(1 + Math.min(.08, stretch * .05));
+      this.gripLines[i].material.color.set(color);
+      this.gripLines[i].material.opacity = .15 + Math.min(.23, stretch * .15);
       const positions = this.gripLines[i].geometry.attributes.position;
       positions.setXYZ(0, this.worldPoint.x, this.worldPoint.y, this.worldPoint.z);
       positions.setXYZ(1, grip.target.x, grip.target.y, grip.target.z);
@@ -452,6 +613,30 @@ export class DuoView {
     this.lastRenderTime = null;
   }
 
+  feedback(event: FeedbackEvent): void {
+    if (!event.table || !event.point || (event.kind !== 'impact' && event.kind !== 'chip') || event.strength < .25) return;
+    if (!Number.isFinite(event.point.x + event.point.y + event.point.z) || Math.abs(event.point.y) > .1) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const now = performance.now();
+    if (event.contactId !== undefined && now - (this.effectContacts.get(event.contactId) ?? -Infinity) < 120) return;
+    if (event.contactId !== undefined) this.effectContacts.set(event.contactId, now);
+    for (const [id, at] of this.effectContacts) if (now - at > 1500) this.effectContacts.delete(id);
+    const effect = this.contactEffects.find(entry => entry.remaining <= 0)
+      ?? this.contactEffects.reduce((oldest, entry) => entry.remaining < oldest.remaining ? entry : oldest);
+    effect.duration = event.kind === 'chip' ? .15 : .19;
+    effect.remaining = effect.duration;
+    effect.size = (event.kind === 'chip' ? .055 : .09) + Math.min(1, Math.max(0, event.strength)) * .12;
+    effect.mesh.position.set(event.point.x, .0012, event.point.z);
+    effect.mesh.scale.setScalar(effect.size);
+    effect.mesh.material.opacity = .16;
+    effect.mesh.visible = true;
+  }
+
+  clearFeedback(): void {
+    for (const effect of this.contactEffects) { effect.remaining = 0; effect.mesh.visible = false; }
+    this.effectContacts.clear();
+  }
+
   private refreshClock(): void {
     const clock = deviceClock();
     this.wallpaper.refresh(clock);
@@ -459,22 +644,26 @@ export class DuoView {
   }
 
   private updateDisplay(dt: number, time: number): void {
-    const flicker = this.health > 0 && this.health < 25 ? (Math.sin(time * 71) > .88 ? .15 : .8) : 1;
-    for (const screen of this.screens) {
-      const target = screenTarget(this.fold, screen.outer, this.broken);
-      const state = this.displayInitialized ? followScreen(screen, target, dt) : target;
+    this.animateScreens(this.screens, this.health, this.broken, this.fold, this.displayInitialized, dt, time);
+    this.displayInitialized = true;
+  }
+
+  private animateScreens(screens: ScreenParts[], health: number, broken: boolean, fold: number, initialized: boolean, dt: number, time: number): void {
+    const flicker = health > 0 && health < 25 ? (Math.sin(time * 71) > .88 ? .15 : .8) : 1;
+    for (const screen of screens) {
+      const target = screenTarget(fold, screen.outer, broken);
+      const state = initialized ? followScreen(screen, target, dt) : target;
       screen.power = state.power;
       screen.frost = state.frost;
       screen.material.setFrost(screen.frost);
       // Compose damage and the handoff once, so a glass transition cannot revive a failed display.
-      screen.material.color.setScalar(this.health <= 0 ? 0 : screen.power * flicker);
+      screen.material.color.setScalar(health <= 0 ? 0 : screen.power * flicker);
     }
-    this.displayInitialized = true;
   }
 
   capture(): string {
     this.refreshClock();
-    const feedback = [...this.gripRings, ...this.gripLines];
+    const feedback = [...this.gripRings, ...this.gripLines, ...this.contactEffects.map(effect => effect.mesh)];
     const visibility = feedback.map(object => object.visible);
     feedback.forEach(object => object.visible = false);
     this.renderer.render(this.scene, this.camera);
@@ -520,6 +709,7 @@ export class DuoView {
   dispose(): void {
     const geometries = new Set<BufferGeometry>();
     const materials = new Set<Material>();
+    Object.values(this.fragmentMaterials).forEach(material => materials.add(material));
     const textures = new Set<Texture>();
     for (const screen of [this.wallpaper, this.coverWallpaper]) {
       textures.add(screen.sharp); textures.add(screen.blurred);

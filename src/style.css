@@ -24,7 +24,7 @@ button svg { width: 18px; height: 18px; flex-shrink: 0; }
 .icon-button { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 50%; color: #65736d; }
 .icon-button:hover { background: #e7ece7; }
 .menu-toggle { background: #ffffff82; border: 1px solid #ffffffa8; }
-.options-panel { position: absolute; z-index: 5; top: calc(78px + var(--safe-top)); right: calc(28px + var(--safe-right)); width: 252px; max-width: calc(100vw - var(--safe-left) - var(--safe-right) - 32px); padding: 12px; border: 1px solid #fff; background: #fffffff5; border-radius: 20px; box-shadow: 0 10px 40px #223e2617; backdrop-filter: blur(20px); }
+.options-panel { position: absolute; z-index: 5; top: calc(78px + var(--safe-top)); right: calc(28px + var(--safe-right)); width: 252px; max-width: calc(100vw - var(--safe-left) - var(--safe-right) - 32px); max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 94px); max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 94px); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 12px; border: 1px solid #fff; background: #fffffff5; border-radius: 20px; box-shadow: 0 10px 40px #223e2617; backdrop-filter: blur(20px); }
 .mode-switch { display: flex; padding: 3px; gap: 2px; background: #edf0ed; border-radius: 13px; }
 .mode-switch button { flex: 1; min-height: 44px; padding: 0 10px; border-radius: 10px; font-size: 12px; color: #7c8981; white-space: nowrap; }
 .mode-switch .selected { background: #fff; color: #273631; box-shadow: 0 1px 5px #24392b0a; }
@@ -53,6 +53,16 @@ button svg { width: 18px; height: 18px; flex-shrink: 0; }
 .health-track i { display: block; width: 100%; height: 100%; background: #69958b; transition: width .18s, background .2s; }
 .footer { position: absolute; bottom: calc(20px + var(--safe-bottom)); left: calc(24px + var(--safe-left)); right: calc(24px + var(--safe-right)); display: flex; justify-content: center; }
 .actions { display: flex; align-items: center; justify-content: center; gap: 8px; flex-shrink: 0; }
+.actions.has-clutter { flex-wrap: wrap; max-width: calc(100vw - var(--safe-left) - var(--safe-right) - 32px); }
+.clear-button { width: auto; padding: 0 16px; gap: 7px; font-size: 12px; white-space: nowrap; border-radius: 25px; }
+#app[data-mode="challenge"] .clear-button { width: 44px; padding: 0; }
+#app[data-mode="challenge"] .clear-button span { display: none; }
+@media (max-width: 400px) {
+  #app[data-mode="challenge"][data-clutter="true"] .reset-button { width: 44px; padding: 0; }
+  #app[data-mode="challenge"][data-clutter="true"] .reset-button span { display: none; }
+}
+.clear-button { border: 1px solid #dce3de; background: #ffffffc9; flex-shrink: 0; }
+.clear-button:hover { background: #fff; }
 .reset-button, .bank-button { min-height: 44px; min-width: 44px; padding: 0 21px; border-radius: 25px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 12px; white-space: nowrap; transition: background .2s, transform .2s; }
 .reset-button { background: #ffffffc9; border: 1px solid #dce3de; color: #5f7265; }
 .reset-button:hover { background: #fff; }
@@ -144,6 +154,10 @@ button svg { width: 18px; height: 18px; flex-shrink: 0; }
   .score-row { gap: 8px; }
   .main-stat strong { font-size: 25px; }
   .points-stat > strong { font-size: 20px; }
+}
+@media (max-width: 430px) {
+  [data-clutter="true"][data-mode="challenge"] .live-feedback,
+  [data-clutter="true"][data-mode="challenge"] .interaction-hint { bottom: calc(128px + var(--safe-bottom)); }
 }
 @media (orientation: landscape) and (max-height: 530px) and (min-width: 600px) {
   .masthead { top: calc(10px + var(--safe-top)); left: calc(22px + var(--safe-left)); right: calc(22px + var(--safe-right)); }

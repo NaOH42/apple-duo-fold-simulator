@@ -1,4 +1,4 @@
-import { Group, Matrix3, Mesh, PerspectiveCamera, Plane, Quaternion, Raycaster, Vector2, Vector3 } from 'three';
+import { Group, Matrix3, Mesh, Object3D, PerspectiveCamera, Plane, Quaternion, Raycaster, Vector2, Vector3 } from 'three';
 import { PHONE } from './config';
 import type { Grip, HalfId, SimPhysics } from './types';
 
@@ -86,6 +86,16 @@ export class DuoInput {
     this.canvas.style.cursor = 'grab';
   }
 
+  reconcile(): void {
+    for (const [id, held] of this.held) {
+      if (this.physics.grips.has(id) && this.physics.activeVisible?.[held.grip.half] !== false) continue;
+      this.release(id);
+      if (id === PIN_ID && this.pinSource !== null) {
+        this.releaseCapture(this.pinSource); this.pinSource = null;
+      } else this.releaseCapture(id);
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -113,9 +123,10 @@ export class DuoInput {
     if (this.held.size >= 2 || this.held.has(event.pointerId)) return;
     this.syncMatrices();
     if (!this.updateRay(event)) return;
-    const hit = this.raycaster.intersectObjects(this.pickables, false).find((entry) => this.halfOf(entry.object) !== null);
+    const hit = this.raycaster.intersectObjects(this.pickables, false).find(entry => this.isVisible(entry.object));
     if (!hit || !hit.face) return;
-    const half = this.halfOf(hit.object)!;
+    const half = this.halfOf(hit.object);
+    if (half === null) return;
     const group = this.halves[half];
     const worldNormal = hit.face.normal.clone().applyMatrix3(new Matrix3().getNormalMatrix(hit.object.matrixWorld)).normalize();
     const localNormal = worldNormal.applyQuaternion(group.getWorldQuaternion(new Quaternion()).invert()).normalize();
@@ -155,6 +166,7 @@ export class DuoInput {
   };
 
   private readonly pointerMove = (event: PointerEvent): void => {
+    this.reconcile();
     const held = this.held.get(event.pointerId);
     if (!held) return;
     if (event.cancelable) event.preventDefault();
@@ -241,13 +253,20 @@ export class DuoInput {
     const inViewport = Math.abs(projected.x) <= 1 && Math.abs(projected.y) <= 1 && projected.z >= -1 && projected.z <= 1;
     const distance = cameraPosition.distanceTo(point);
     const visibilityRay = new Raycaster(cameraPosition, point.clone().sub(cameraPosition).normalize(), 0, distance + VISIBILITY_EPSILON);
-    const nearest = visibilityRay.intersectObjects(this.pickables, false).find((hit) => this.halfOf(hit.object) !== null);
+    const nearest = visibilityRay.intersectObjects(this.pickables, false).find(hit => this.isVisible(hit.object));
     const visible = nearest !== undefined && this.halfOf(nearest.object) === held.grip.half && Math.abs(nearest.distance - distance) <= VISIBILITY_EPSILON;
     return { half: held.grip.half, inner: held.inner, facing, visible, inViewport };
   }
 
   private halfOf(object: { userData: Record<string, unknown> }): HalfId | null {
-    return object.userData.half === 0 || object.userData.half === 1 ? object.userData.half : null;
+    if (object.userData.retired === true) return null;
+    const half = object.userData.half;
+    return (half === 0 || half === 1) && this.physics.activeVisible?.[half] !== false ? half : null;
+  }
+
+  private isVisible(object: Object3D): boolean {
+    for (let node: Object3D | null = object; node; node = node.parent) if (!node.visible) return false;
+    return true;
   }
 
   private capture(id: number): void {

@@ -3,6 +3,7 @@ import type { GameState, Mode, PhysicsSample, RoundResult } from './types';
 type Callbacks = {
   onMode: (mode: Mode) => void; onReset: () => void; onFinish: () => void;
   onSound: () => void; onHelp: () => void; onExport: () => void;
+  onHaptics?: () => void; onClearDesk?: () => void;
 };
 const number = (n: number) => Math.round(n).toLocaleString('zh-CN');
 const icons = {
@@ -14,6 +15,8 @@ const icons = {
   download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  haptics: '<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M3 8v8m18-8v8M10 17h4"/>',
+  clear: '<path d="m14 3 7 7-8 8-7-7zM6 11l-4 5 6 6 5-4M5 15l4 4M8 12l4 4"/>',
 };
 const icon = (name: keyof typeof icons) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]}</svg>`;
 
@@ -39,7 +42,7 @@ export class GameUI {
         </header>
         <section class="options-panel" id="duo-menu" data-ref="menu" aria-label="更多选项" hidden>
           <nav class="mode-switch" aria-label="游玩模式"><button data-action="free" class="selected" aria-pressed="true">自由把玩</button><button data-action="challenge" aria-pressed="false">耐久挑战</button></nav>
-          <div class="menu-options"><button data-action="sound" aria-label="关闭音效">${icon('sound')}<span data-ref="soundLabel">音效开启</span></button><button data-action="help">${icon('help')}<span>怎么玩</span></button></div>
+          <div class="menu-options"><button data-action="sound" aria-label="关闭音效">${icon('sound')}<span data-ref="soundLabel">音效开启</span></button><button data-action="haptics" aria-label="关闭触感" hidden>${icon('haptics')}<span data-ref="hapticsLabel">触感开启</span></button><button data-action="help">${icon('help')}<span>怎么玩</span></button></div>
           <div class="best-record" data-ref="record">本机纪录 <strong>0</strong></div>
         </section>
         <aside class="telemetry" data-ref="telemetry" aria-label="本局状态" hidden>
@@ -52,12 +55,12 @@ export class GameUI {
         <div class="live-feedback" data-ref="feedback" hidden><span class="force-dot" data-ref="forceDot"></span><span data-ref="forceLabel">轻轻拿起</span><div class="force-track"><i data-ref="forceBar"></i></div></div>
         <div class="interaction-hint" data-ref="hint" hidden>按住机身拖动，松手落下</div>
         <footer class="footer">
-          <div class="actions"><button class="reset-button" data-action="reset">${icon('reset')}<span>换新</span></button><button class="bank-button" data-action="finish" hidden>收手结算${icon('arrow')}</button></div>
+          <div class="actions" data-ref="actions"><button class="reset-button" data-action="reset" aria-label="换新">${icon('reset')}<span>换新</span></button><button class="icon-button clear-button" data-action="clearDesk" aria-label="清桌面" title="清桌面" hidden>${icon('clear')}<span>清桌面</span></button><button class="bank-button" data-action="finish" hidden>收手结算${icon('arrow')}</button></div>
         </footer>
       </div>
       <div class="loading-pill" role="status" data-ref="loading"><span class="spinner"></span>正在准备你的 DUO</div>
       <div class="toast" role="status" data-ref="toast" hidden></div>
-      <section class="help-panel" data-ref="help" hidden aria-label="玩法说明"><button class="icon-button panel-close" data-action="closeHelp" aria-label="关闭说明">${icon('close')}</button><span class="eyebrow">上手很简单</span><h2>抓住。甩开。轻轻合上。</h2><p>按住可见机身拖动，松手就会落下。抓住不同位置，感受不同的惯性。</p><p>两个内屏都朝向你、抓点无遮挡时，双指可以各抓一半。抓住后翻转也不会脱手。</p><p><strong>电脑双手：</strong>按住 Shift，单击留住一个抓点，再拖另一半。松开 Shift 释放留住的抓点。</p><div class="help-rule"><strong>耐久挑战</strong><p>展开 → 合拢 → 再展开，算一次完整开合。平顺动作和连续节奏有额外积分。正常折叠不伤机，猛甩、硬掰和摔落才会损坏。</p><p>主动收手按剩余耐久获得加成。折坏仍保留已得积分。</p></div></section>
+      <section class="help-panel" data-ref="help" hidden aria-label="玩法说明"><button class="icon-button panel-close" data-action="closeHelp" aria-label="关闭说明">${icon('close')}</button><span class="eyebrow">上手很简单</span><h2>抓住。甩开。轻轻合上。</h2><p>按住可见机身拖动，松手就会落下。抓住不同位置，感受不同的惯性。</p><p>两个内屏都朝向你、抓点无遮挡时，双指可以各抓一半。抓住后翻转也不会脱手。</p><p><strong>电脑双手：</strong>按住 Shift，单击留住一个抓点，再拖另一半。松开 Shift 释放留住的抓点。</p><p>换新后，旧机会留在桌上。碎开的残骸还能继续磕碎；点底部扫帚清桌面，给新机腾出地方。</p><div class="help-rule"><strong>耐久挑战</strong><p>展开 → 合拢 → 再展开，算一次完整开合。平顺动作和连续节奏有额外积分。正常折叠不伤机，猛甩、硬掰和摔落才会损坏。</p><p>主动收手按剩余耐久获得加成。折坏仍保留已得积分。</p></div></section>
       <div class="modal-backdrop" data-ref="resultModal" hidden><section class="result-card" role="dialog" aria-modal="true" aria-labelledby="result-title"><div class="result-photo"><img data-ref="resultPhoto" alt="本局 DUO 的最终状态"/><span class="result-photo-label">APPLE DUO / FOLD SESSION</span></div><div class="result-content"><span class="eyebrow" data-ref="resultEyebrow">漂亮收手</span><h2 id="result-title" data-ref="resultTitle">留一点余地，下次再玩。</h2><div class="result-score"><strong data-ref="resultScore">0</strong><span>积分</span><div><b data-ref="resultFolds">0</b> 次完整开合</div></div><div class="result-detail" data-ref="resultDetail"></div><div class="result-buttons"><button class="primary-button" data-action="again">再玩一次${icon('arrow')}</button><button class="secondary-button" data-action="export">${icon('download')}保存结果卡</button></div><p class="result-note">本机纪录 · 每一次开合，都算数</p></div></section></div>
       <div class="modal-backdrop image-modal" data-ref="imageModal" hidden><section role="dialog" aria-modal="true" aria-label="保存结果图片"><button class="icon-button image-close" data-action="closeImage" aria-label="关闭图片">${icon('close')}</button><img data-ref="exportImage" alt="DUO 本局结果卡，可长按保存"/><p>长按图片保存，或<a data-ref="download" download="apple-duo-session.png">下载图片</a></p></section></div>`;
     this.root = container;
@@ -71,6 +74,8 @@ export class GameUI {
     this.action('again', () => this.reset());
     this.action('finish', () => callbacks.onFinish());
     this.action('sound', () => callbacks.onSound());
+    this.action('haptics', () => callbacks.onHaptics?.());
+    this.action('clearDesk', () => callbacks.onClearDesk?.());
     this.action('menu', () => { this.setMenu(this.refs.menu.hidden); callbacks.onHelp(); });
     this.action('help', () => { this.showHelp(); callbacks.onHelp(); });
     this.action('closeHelp', () => this.refs.help.hidden = true);
@@ -118,7 +123,7 @@ export class GameUI {
     this.text('forceLabel', label);
     const showFeedback = gripCount > 0 || danger || warning || state.broken || state.screen === 0;
     if (this.changed('showFeedback', showFeedback)) r.feedback.hidden = !showFeedback;
-    if (gripCount > 0) this.hideHint();
+    if (showFeedback) this.hideHint();
     const forceColor = danger ? '#dc6a4b' : warning ? '#bd9b52' : '#69958b';
     this.style('forceDot', 'background', forceColor);
     this.style('forceBar', 'width', `${Math.round(Math.min(100, Math.max(3, state.strain * 80)))}%`);
@@ -155,6 +160,26 @@ export class GameUI {
   }
 
   showHelp() { this.setMenu(false); this.hideHint(); this.refs.help.hidden = !this.refs.help.hidden; }
+
+  setHaptics(enabled: boolean, supported: boolean): void {
+    const button = this.buttons.haptics;
+    button.hidden = !supported;
+    this.refs.hapticsLabel.textContent = enabled ? '触感开启' : '触感关闭';
+    button.setAttribute('aria-label', enabled ? '关闭触感' : '开启触感');
+    button.setAttribute('aria-pressed', String(enabled));
+  }
+
+  setDesk(hasClutter: boolean, full: boolean): void {
+    if (this.changed('deskClutter', hasClutter)) {
+      this.buttons.clearDesk.hidden = !hasClutter;
+      this.refs.actions.classList.toggle('has-clutter', hasClutter);
+      this.root.dataset.clutter = String(hasClutter);
+    }
+    if (this.changed('deskFull', full)) {
+      this.buttons.reset.querySelector('span')!.textContent = full ? '先清桌面' : '换新';
+      this.buttons.reset.setAttribute('aria-label', full ? '先清桌面' : '换新');
+    }
+  }
 
   showImage(dataUrl: string) {
     (this.refs.exportImage as HTMLImageElement).src = dataUrl;
