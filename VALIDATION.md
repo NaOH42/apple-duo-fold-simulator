@@ -1,5 +1,21 @@
 # 验证记录
 
+## Toy 首次提交审核（2026-10-29，America/Los_Angeles）
+
+- 用户看过最终平台预览后明确答复“提交审核”。提交前再次核对账号NaOH42/uid2362171、12文件平台包及封面/图标的字节数和SHA-256，全部与批准预览相同；按原冻结参数只增加提交标记，未更换游戏文件或元信息。
+- 官方CLI返回Toy ID `49312008507392`，status `auditing`；随后mylist独立回读同一ID/标题、PUBLIC、GAME、auditing，确认进入审核。此状态不代表已正式上架。
+- 包体SHA-256：`6821b338c8c97e8badefbd3f469b66cd26ead2be5ab12d9c9c58e76c1557b5e8`。原网页包、平台包、封面和图标保持冻结，未触碰其他Toy或绑定视频。
+- 提交返回的新预览再次读回8个指纹资产，均HTTP200且哈希匹配；入口及licenses.html正常、许可正文一致，证据submitted-resource-readback.json。
+- 回执：artifacts/toy-release-v0.2.0/submission.json、online-status.json、release-state.json。请求主题仍为light；审核中基础列表回读默认dark且未返回封面/正式URL，主题最终结果待通过后回查，未额外覆盖审核中的版本。
+
+## Toy 首次上架预览（2026-10-29，America/Los_Angeles）
+
+- 账号NaOH42，线上和本地历史核对为本项目首次发布，未更新或绑定其他Toy。
+- 标题Apple DUO 折叠模拟器，slug apple-duo-fold-simulator，公开/GAME/light；封面1200×900、独立图标512×512。最终Toy专用ZIP在原v0.2.0包上仅加可访问的HTML许可证声明，共12文件/1,014,020字节，原游戏文件逐字节保留。
+- 包体/封面/slug的Toy doctor均0错误、0警告；原始包、平台包和素材SHA清单已冻结在artifacts/toy-release-v0.2.0/。
+- 实际Toy平台8个指纹资产HTTP200且哈希匹配原构建；平台重写的入口HTML和licenses.html语义校验通过。内容iframe完成模拟单指/双指、横竖屏、收手、1000×1280图片、重开、旧机保留和清桌。无脚本错误/运行失败请求，生产诊断未暴露。
+- 此节为预览阶段记录；随后已获用户明确确认并提交审核，最新状态见上方送审记录。预览链接、上传参数、图像/包体SHA和详细平台证据保存在artifacts/toy-release-v0.2.0/release-state.json、release-manifest.json与platform-validation.md。
+
 ## v0.2.0 机械反馈与桌面残骸（2026-10-29，America/Los_Angeles）
 
 - 新增真实manifold接点、法线、入射/切向速度、材质和桌面/墙体区分，轻磕/滑擦反馈与原耐久伤害采样分开。原计分、伤害阈值、固定步长与静置公平性保留。
