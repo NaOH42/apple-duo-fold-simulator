@@ -13,6 +13,7 @@ const icons = {
   arrow: '<path d="M5 12h14m-6-6 6 6-6 6"/>',
   download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
+  more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
 };
 const icon = (name: keyof typeof icons) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]}</svg>`;
 
@@ -22,6 +23,7 @@ export class GameUI {
   private result: RoundResult | null = null;
   private resultImage = '';
   private toastTimer = 0;
+  private hintTimer = 0;
   private previousFolds = 0;
   private refs: Record<string, HTMLElement> = {};
   private buttons: Record<string, HTMLButtonElement> = {};
@@ -32,24 +34,25 @@ export class GameUI {
       <canvas class="play-canvas" aria-label="可抓取和折叠的 iPhone Duo 模拟机"></canvas>
       <div class="interface">
         <header class="masthead">
-          <div class="brand"><div class="wordmark">Apple <strong>DUO</strong><span class="brand-dot"></span></div><p>折叠模拟器 <span>·</span> 随手，把玩。</p></div>
-          <nav class="mode-switch" aria-label="游玩模式"><button data-action="free" class="selected" aria-pressed="true">自由把玩</button><button data-action="challenge" aria-pressed="false">耐久挑战</button></nav>
+          <div class="brand"><div class="wordmark">Apple <strong>DUO</strong></div></div>
+          <button class="icon-button menu-toggle" data-action="menu" aria-label="更多选项" aria-expanded="false" aria-controls="duo-menu">${icon('more')}</button>
         </header>
-        <aside class="telemetry" aria-label="本局状态">
-          <div class="mode-caption"><span class="live-dot"></span><span data-ref="modeLabel">自由把玩</span></div>
+        <section class="options-panel" id="duo-menu" data-ref="menu" aria-label="更多选项" hidden>
+          <nav class="mode-switch" aria-label="游玩模式"><button data-action="free" class="selected" aria-pressed="true">自由把玩</button><button data-action="challenge" aria-pressed="false">耐久挑战</button></nav>
+          <div class="menu-options"><button data-action="sound" aria-label="关闭音效">${icon('sound')}<span data-ref="soundLabel">音效开启</span></button><button data-action="help">${icon('help')}<span>怎么玩</span></button></div>
+          <div class="best-record" data-ref="record">本机纪录 <strong>0</strong></div>
+        </section>
+        <aside class="telemetry" data-ref="telemetry" aria-label="本局状态" hidden>
           <div class="score-row"><div class="main-stat"><span class="stat-label">完整开合</span><div><strong data-ref="folds">0</strong><span class="unit">次</span></div></div><div class="points-stat" data-ref="pointsBlock"><span class="stat-label">本局积分</span><strong data-ref="score">0</strong><span class="combo" data-ref="combo">×1.0</span></div></div>
           <div class="health-section">
             <div class="health-row"><span>屏幕</span><div class="health-track"><i data-ref="screenBar"></i></div><span data-ref="screen">100%</span></div>
             <div class="health-row"><span>铰链</span><div class="health-track"><i data-ref="hingeBar"></i></div><span data-ref="hinge">100%</span></div>
           </div>
-          <div class="best-record" data-ref="record">本机纪录 <strong>0</strong></div>
         </aside>
-        <div class="angle-readout"><span>开合角度</span><strong data-ref="angle">180<span>°</span></strong><div class="angle-line"><i data-ref="angleBar"></i></div></div>
-        <div class="live-feedback"><span class="force-dot" data-ref="forceDot"></span><span data-ref="forceLabel">轻轻拿起，随手甩开</span><div class="force-track"><i data-ref="forceBar"></i></div></div>
+        <div class="live-feedback" data-ref="feedback" hidden><span class="force-dot" data-ref="forceDot"></span><span data-ref="forceLabel">轻轻拿起</span><div class="force-track"><i data-ref="forceBar"></i></div></div>
+        <div class="interaction-hint" data-ref="hint" hidden>按住机身拖动，松手落下</div>
         <footer class="footer">
-          <div class="interaction-hint"><span class="hint-mark">↗</span><p>按住机身甩动<span>两面朝向你时，试试双指掰折</span></p></div>
-          <div class="actions"><button class="reset-button" data-action="reset">${icon('reset')}<span>换一台新的</span></button><button class="bank-button" data-action="finish" hidden>收手结算${icon('arrow')}</button></div>
-          <div class="utility"><button class="icon-button" data-action="sound" aria-label="关闭音效" title="音效">${icon('sound')}</button><button class="icon-button" data-action="help" aria-label="玩法说明" title="玩法说明">${icon('help')}</button></div>
+          <div class="actions"><button class="reset-button" data-action="reset">${icon('reset')}<span>换新</span></button><button class="bank-button" data-action="finish" hidden>收手结算${icon('arrow')}</button></div>
         </footer>
       </div>
       <div class="loading-pill" role="status" data-ref="loading"><span class="spinner"></span>正在准备你的 DUO</div>
@@ -68,11 +71,16 @@ export class GameUI {
     this.action('again', () => this.reset());
     this.action('finish', () => callbacks.onFinish());
     this.action('sound', () => callbacks.onSound());
+    this.action('menu', () => { this.setMenu(this.refs.menu.hidden); callbacks.onHelp(); });
     this.action('help', () => { this.showHelp(); callbacks.onHelp(); });
     this.action('closeHelp', () => this.refs.help.hidden = true);
     this.action('export', () => callbacks.onExport());
     this.action('closeImage', () => this.refs.imageModal.hidden = true);
-    document.addEventListener('keydown', event => { if (event.key === 'Escape') { this.refs.help.hidden = true; this.refs.imageModal.hidden = true; } });
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') { this.setMenu(false); this.refs.help.hidden = true; this.refs.imageModal.hidden = true; } });
+    document.addEventListener('pointerdown', event => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest('.options-panel, .menu-toggle')) this.setMenu(false);
+    });
   }
 
   update(state: GameState, sample: PhysicsSample, gripCount: number) {
@@ -82,7 +90,8 @@ export class GameUI {
     this.text('combo', `×${state.multiplier.toFixed(1)}`);
     if (this.changed('comboActive', state.multiplier > 1)) r.combo.classList.toggle('active', state.multiplier > 1);
     if (this.changed('mode', state.mode)) {
-      r.modeLabel.textContent = state.mode === 'free' ? '自由把玩' : '耐久挑战';
+      this.root.dataset.mode = state.mode;
+      r.telemetry.hidden = state.mode === 'free';
       r.pointsBlock.hidden = state.mode === 'free';
       for (const mode of ['free', 'challenge']) {
         const button = this.buttons[mode];
@@ -93,10 +102,6 @@ export class GameUI {
     if (this.changed('record', `${state.bestScore}:${state.bestFolds}`)) {
       r.record.innerHTML = `本机纪录 <strong>${number(state.bestScore)}</strong><span>分 · ${number(state.bestFolds)} 次</span>`;
     }
-    const angle = Number.isFinite(sample.angle) ? Math.max(0, Math.min(180, sample.angle)) : 0;
-    const roundedAngle = Math.round(angle);
-    if (this.changed('angle', roundedAngle)) r.angle.innerHTML = `${roundedAngle}<span>°</span>`;
-    this.style('angleBar', 'width', `${(roundedAngle / 180 * 100).toFixed(2)}%`);
     for (const part of ['screen', 'hinge'] as const) {
       this.text(part, `${Math.ceil(state[part])}%`);
       this.style(`${part}Bar`, 'width', `${state[part].toFixed(2)}%`);
@@ -104,14 +109,16 @@ export class GameUI {
     }
     const danger = state.strain > 1 || sample.hardStop > 1;
     const warning = state.strain > .65;
-    const label = state.broken ? '铰链已断开 · 可以继续把玩'
+    const label = state.broken ? '铰链已断开'
       : state.screen === 0 ? '屏幕已失效'
       : danger ? '力道过猛，轻一点'
       : warning ? '感受到阻力了'
-      : gripCount > 1 ? '双指握持 · 感受开合的阻力'
-      : gripCount === 1 ? '握住了 · 试着甩开'
-      : state.folds > 0 ? '轻轻合上，再次展开' : '轻轻拿起，随手甩开';
+      : gripCount > 1 ? '双指握持'
+      : gripCount === 1 ? '握住了' : '轻轻拿起';
     this.text('forceLabel', label);
+    const showFeedback = gripCount > 0 || danger || warning || state.broken || state.screen === 0;
+    if (this.changed('showFeedback', showFeedback)) r.feedback.hidden = !showFeedback;
+    if (gripCount > 0) this.hideHint();
     const forceColor = danger ? '#dc6a4b' : warning ? '#bd9b52' : '#69958b';
     this.style('forceDot', 'background', forceColor);
     this.style('forceBar', 'width', `${Math.round(Math.min(100, Math.max(3, state.strain * 80)))}%`);
@@ -120,7 +127,7 @@ export class GameUI {
     if (this.changed('hideFinish', hideFinish)) this.buttons.finish.hidden = hideFinish;
     if (this.changed('sound', state.sound)) {
       const sound = this.buttons.sound;
-      sound.innerHTML = icon(state.sound ? 'sound' : 'muted');
+      sound.innerHTML = `${icon(state.sound ? 'sound' : 'muted')}<span>${state.sound ? '音效开启' : '音效关闭'}</span>`;
       sound.setAttribute('aria-label', state.sound ? '关闭音效' : '开启音效');
     }
     if (state.folds !== this.previousFolds) {
@@ -147,7 +154,7 @@ export class GameUI {
     this.root.querySelector<HTMLButtonElement>('[data-action="again"]')?.focus();
   }
 
-  showHelp() { this.refs.help.hidden = !this.refs.help.hidden; }
+  showHelp() { this.setMenu(false); this.hideHint(); this.refs.help.hidden = !this.refs.help.hidden; }
 
   showImage(dataUrl: string) {
     (this.refs.exportImage as HTMLImageElement).src = dataUrl;
@@ -192,6 +199,8 @@ export class GameUI {
   setReady() {
     this.refs.loading.hidden = true;
     for (const action of ['free', 'challenge', 'reset', 'finish']) this.buttons[action].disabled = false;
+    this.refs.hint.hidden = false;
+    this.hintTimer = window.setTimeout(() => this.hideHint(), 6500);
   }
   showError(message: string) {
     this.refs.loading.innerHTML = `<span class="error-dot"></span><span></span>`;
@@ -213,13 +222,25 @@ export class GameUI {
     if (this.changed(`style:${name}:${property}`, value)) this.refs[name].style[property] = value;
   }
   private changeMode(mode: Mode) {
+    this.setMenu(false);
+    this.hideHint();
     this.refs.resultModal.hidden = true;
     this.refs.help.hidden = true;
     this.callbacks.onMode(mode);
   }
   private reset() {
+    this.setMenu(false);
     this.refs.resultModal.hidden = true;
     this.refs.imageModal.hidden = true;
     this.callbacks.onReset();
+  }
+  private setMenu(open: boolean) {
+    this.refs.menu.hidden = !open;
+    this.buttons.menu.setAttribute('aria-expanded', String(open));
+    if (open) this.refs.help.hidden = true;
+  }
+  private hideHint() {
+    window.clearTimeout(this.hintTimer);
+    this.refs.hint.hidden = true;
   }
 }

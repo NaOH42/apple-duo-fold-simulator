@@ -107,6 +107,33 @@ function seeded(seed: number): () => number {
   return () => { v = (v * 1664525 + 1013904223) >>> 0; return v / 4294967296; };
 }
 
+function tableReferenceTexture(): CanvasTexture {
+  return canvasTexture(1024, 1024, ctx => {
+    const unit = 1024 / 4.4;
+    const x = unit * .2, y = unit * .45, w = unit * 4, h = unit * 3.5;
+    ctx.fillStyle = '#cbd2d82e';
+    ctx.beginPath(); ctx.roundRect(x, y, w, h, unit * .15); ctx.fill();
+    ctx.save(); ctx.clip();
+    // Etched half-unit marks give a fixed depth reference without competing with the phone.
+    ctx.strokeStyle = '#75828e13'; ctx.lineWidth = .8;
+    for (let mark = -4; mark <= 4; mark++) {
+      const p = 512 + mark * unit * .5;
+      ctx.beginPath(); ctx.moveTo(p, y); ctx.lineTo(p, y + h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, p); ctx.lineTo(x + w, p); ctx.stroke();
+    }
+    ctx.restore();
+    ctx.strokeStyle = '#8c98a43b'; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.roundRect(x, y, w, h, unit * .15); ctx.stroke();
+    ctx.strokeStyle = '#73808b38'; ctx.lineWidth = 1.6;
+    for (const px of [x + unit * .2, x + w - unit * .2]) {
+      for (const py of [y + unit * .2, y + h - unit * .2]) {
+        ctx.beginPath(); ctx.moveTo(px - unit * .035, py); ctx.lineTo(px + unit * .035, py);
+        ctx.moveTo(px, py - unit * .035); ctx.lineTo(px, py + unit * .035); ctx.stroke();
+      }
+    }
+  });
+}
+
 function crackTexture(half: HalfId): CanvasTexture {
   return canvasTexture(512, 1024, ctx => {
     const random = seeded(3192 + half * 37);
@@ -198,15 +225,25 @@ export class DuoView {
     rim.position.set(4, 2.5, -4); this.scene.add(rim);
 
     const floor = new Mesh(new PlaneGeometry(100, 100), new MeshStandardMaterial({ color: '#f4f5f7', roughness: .92, metalness: .03 }));
-    floor.rotation.x = -Math.PI / 2; floor.position.y = -.012; floor.receiveShadow = true;
+    floor.name = 'floor';
+    floor.rotation.x = -Math.PI / 2; floor.position.y = 0; floor.receiveShadow = true;
     this.scene.add(floor);
+    // A flush printed surface, aligned with the physical floor rather than a raised display plinth.
+    const tableReference = new Mesh(new PlaneGeometry(4.4, 4.4), new MeshBasicMaterial({
+      map: tableReferenceTexture(), transparent: true, depthWrite: false, toneMapped: false,
+      polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+    }));
+    tableReference.name = 'table-reference';
+    tableReference.rotation.x = -Math.PI / 2;
+    tableReference.position.y = .0002;
+    this.scene.add(tableReference);
     const shadowMap = canvasTexture(128, 128, ctx => {
       const g = ctx.createRadialGradient(64, 64, 3, 64, 64, 64);
       g.addColorStop(0, '#26343b55'); g.addColorStop(.35, '#26343b2e'); g.addColorStop(1, '#26343b00');
       ctx.fillStyle = g; ctx.fillRect(0, 0, 128, 128);
     });
     this.shadow = new Mesh(new PlaneGeometry(2.8, 2.6), new MeshBasicMaterial({ map: shadowMap, transparent: true, depthWrite: false, opacity: .6 }));
-    this.shadow.rotation.x = -Math.PI / 2; this.shadow.position.y = -.008;
+    this.shadow.rotation.x = -Math.PI / 2; this.shadow.position.y = .0005;
     this.scene.add(this.shadow);
 
     this.wallpaper = wallpaperTexture();

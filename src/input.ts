@@ -126,10 +126,17 @@ export class DuoInput {
       return;
     }
     const id = isPin ? PIN_ID : event.pointerId;
+    // A camera-facing plane turns an upward swipe into both lift and a push away
+    // from the player. Gravity removes only the lift, so re-grabbing drifts farther
+    // up the table. A vertical plane keeps the acquired horizontal depth fixed.
+    const dragNormal = this.camera.getWorldDirection(new Vector3());
+    dragNormal.y = 0;
+    if (dragNormal.lengthSq() < 1e-6) dragNormal.set(0, 0, 1);
+    dragNormal.normalize();
     const held: HeldGrip = {
       grip: { id, half, localPoint: group.worldToLocal(hit.point.clone()), localNormal, target: hit.point.clone() },
       inner,
-      plane: new Plane().setFromNormalAndCoplanarPoint(this.camera.getWorldDirection(new Vector3()), hit.point),
+      plane: new Plane().setFromNormalAndCoplanarPoint(dragNormal, hit.point),
       origin: hit.point.clone(),
     };
     const result = canAcquireGrip([...this.held.values()].map((entry) => this.admissionPoint(entry)), this.admissionPoint(held));

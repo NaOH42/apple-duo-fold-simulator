@@ -61,8 +61,8 @@ function emit(target: EventTarget, type: string, values: Record<string, unknown>
 
 function withInput(run: (harness: {
   input: DuoInput; canvas: FakeCanvas; window: EventTarget;
-  physics: SimPhysics; halves: [Group, Group]; at: (half: HalfId) => { clientX: number; clientY: number };
-}) => void): void {
+  physics: SimPhysics; camera: PerspectiveCamera; halves: [Group, Group]; at: (half: HalfId) => { clientX: number; clientY: number };
+}) => void, cameraSetup?: (camera: PerspectiveCamera) => void): void {
   const oldWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
   const fakeWindow = new EventTarget();
@@ -73,6 +73,7 @@ function withInput(run: (harness: {
   const camera = new PerspectiveCamera(45, 1, 0.1, 100);
   camera.position.set(0, 0, 5);
   camera.lookAt(0, 0, 0);
+  cameraSetup?.(camera);
   camera.updateMatrixWorld();
   const halves: [Group, Group] = [new Group(), new Group()];
   const pickables: Mesh[] = [];
@@ -104,7 +105,7 @@ function withInput(run: (harness: {
     return { clientX: (projected.x + 1) * 400, clientY: (1 - projected.y) * 400 };
   };
   try {
-    run({ input, canvas, window: fakeWindow, physics, halves, at });
+    run({ input, canvas, window: fakeWindow, physics, camera, halves, at });
   } finally {
     input.dispose();
     for (const mesh of pickables) mesh.geometry.dispose();
@@ -132,6 +133,80 @@ test('surface picking starts exactly on the surface and off-canvas dragging only
     emit(canvas, 'pointerup', { pointerId: 11 });
     assert.equal(physics.grips.size, 0);
   });
+});
+
+test('an upward drag with the tilted game camera raises the target without pushing it farther across the table', () => {
+  withInput(({ canvas, physics, camera, at }) => {
+    const start = at(0);
+    emit(canvas, 'pointerdown', { pointerId: 11, ...start });
+    assert.equal(physics.grips.size, 1);
+    const grip = physics.grips.get(11)!;
+    const initial = grip.target.clone();
+    emit(canvas, 'pointermove', { pointerId: 11, clientX: start.clientX, clientY: start.clientY - 80 });
+    const delta = grip.target.clone().sub(initial);
+    const depth = camera.getWorldDirection(new Vector3()).setY(0).normalize();
+    assert.ok(delta.y > .3, `upward input still lifts the body: ${delta.y}`);
+    assert.ok(Math.abs(delta.dot(depth)) < 1e-9, `unintended horizontal depth change ${delta.dot(depth)}`);
+    emit(canvas, 'pointerup', { pointerId: 11 });
+    assert.equal(physics.grips.size, 0);
+  }, camera => { camera.position.set(3, 4.5, 5.8); camera.lookAt(0, .25, 0); });
+});
+
+test('a centred upward drag changes only height even with an oblique camera', () => {
+  withInput(({ canvas, physics, at }) => {
+    const start = at(0);
+    emit(canvas, 'pointerdown', { pointerId: 11, ...start });
+    const grip = physics.grips.get(11)!;
+    const initial = grip.target.clone();
+    emit(canvas, 'pointermove', { pointerId: 11, clientX: start.clientX, clientY: start.clientY - 80 });
+    const delta = grip.target.clone().sub(initial);
+    assert.ok(delta.y > .3);
+    assert.ok(Math.hypot(delta.x, delta.z) < 1e-9, `horizontal travel ${Math.hypot(delta.x, delta.z)}`);
+  }, camera => {
+    const centre = new Vector3(-(PHONE.width + PHONE.gap) / 2, 0, PHONE.thickness / 2 + .001);
+    camera.position.copy(centre).add(new Vector3(3, 4.5, 5.8)); camera.lookAt(centre);
+  });
+});
+
+test('repeated lift, release and regrasp cannot accumulate hidden table-depth travel', () => {
+  withInput(({ canvas, physics, camera, halves, at }) => {
+    const depth = camera.getWorldDirection(new Vector3()).setY(0).normalize();
+    const originalDepth = physics.poses[0].position.dot(depth);
+    for (let cycle = 0; cycle < 12; cycle++) {
+      const start = at(0);
+      emit(canvas, 'pointerdown', { pointerId: 11, ...start });
+      assert.equal(physics.grips.size, 1, `regrasp ${cycle}`);
+      const grip = physics.grips.get(11)!;
+      const initial = grip.target.clone();
+      emit(canvas, 'pointermove', { pointerId: 11, clientX: start.clientX, clientY: start.clientY - 80 });
+      const delta = grip.target.clone().sub(initial);
+      emit(canvas, 'pointerup', { pointerId: 11 });
+      // This input harness follows the horizontal target, then lets the lifted height settle.
+      // Translating both leaves keeps their relative geometry unchanged for the next raycast.
+      delta.y = 0;
+      halves.forEach((half, index) => {
+        half.position.add(delta); half.updateMatrixWorld(true);
+        physics.poses[index].position.copy(half.position);
+      });
+      assert.ok(Math.abs(physics.poses[0].position.dot(depth) - originalDepth) < 1e-9,
+        `table-depth drift after ${cycle + 1} lifts`);
+    }
+  }, camera => { camera.position.set(3, 4.5, 5.8); camera.lookAt(0, .25, 0); });
+});
+
+test('horizontal dragging with the tilted game camera still moves freely across the table', () => {
+  withInput(({ canvas, physics, camera, at }) => {
+    const start = at(0);
+    emit(canvas, 'pointerdown', { pointerId: 11, ...start });
+    const grip = physics.grips.get(11)!;
+    const initial = grip.target.clone();
+    emit(canvas, 'pointermove', { pointerId: 11, clientX: start.clientX + 80, clientY: start.clientY });
+    const delta = grip.target.clone().sub(initial);
+    const right = new Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    const depth = camera.getWorldDirection(new Vector3()).setY(0).normalize();
+    assert.ok(delta.dot(right) > .3, `horizontal input travel ${delta.dot(right)}`);
+    assert.ok(Math.abs(delta.dot(depth)) < 1e-9);
+  }, camera => { camera.position.set(3, 4.5, 5.8); camera.lookAt(0, .25, 0); });
 });
 
 test('two accepted grips survive turning away, and releasing one preserves the other', () => {
